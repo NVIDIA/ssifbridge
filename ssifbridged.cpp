@@ -47,7 +47,7 @@ class SsifChannel
 
     SsifChannel(std::shared_ptr<boost::asio::io_context>& io,
                    std::shared_ptr<sdbusplus::asio::connection>& bus,
-                   const std::string& channel, bool verbose);
+                   const std::string& channel, bool verbose, bool logRaw);
     bool initOK() const
     {
         return !!dev;
@@ -63,13 +63,15 @@ class SsifChannel
     std::shared_ptr<sdbusplus::asio::object_server> server;
     std::unique_ptr<boost::asio::posix::stream_descriptor> dev = nullptr;
     bool verbose;
+    bool logRaw;
 };
 
 SsifChannel::SsifChannel(std::shared_ptr<boost::asio::io_context>& io,
                          std::shared_ptr<sdbusplus::asio::connection>& bus,
-                         const std::string& device, bool verbose) :
+                         const std::string& device, bool verbose, bool logRaw) :
     io(io),
-    bus(bus), verbose(verbose)
+    bus(bus), 
+    verbose(verbose), logRaw(logRaw)
 {
     std::string devName = devBase;
     if (!device.empty())
@@ -144,7 +146,19 @@ void SsifChannel::processMessage(const boost::system::error_code& ecRd,
                 " lun=" + std::to_string(lun) +
                 " cmd=" + std::to_string(cmd);
         log<level::INFO>(msgToLog.c_str());
+
+        if (logRaw)
+        {
+            std::stringstream ss;
+            for (int msgPos = 0; msgPos < rawIter[0] + 1; msgPos++)
+            {
+                ss << "0x" << std::uppercase << std::setfill('0') << std::setw(2) << std::hex << static_cast<unsigned int>(rawIter[msgPos]) << " ";
+            }
+            std::string rawMsgToLog = "Raw Msg Data: " + ss.str();
+            log<level::INFO>(rawMsgToLog.c_str());
+        }
     }
+
     // copy out payload
     std::vector<uint8_t> data(&rawIter[3], rawEnd);
     // non-session bridges still need to pass an empty options map
@@ -209,6 +223,17 @@ void SsifChannel::processMessage(const boost::system::error_code& ecRd,
                         " cmd=" + std::to_string(cmd) +
                         " cc=" + std::to_string(cc);
                 log<level::INFO>(msgToLog.c_str());
+
+                if (logRaw)
+                {
+                    std::stringstream ss;
+                    for (unsigned int msgPos = 0; msgPos < rsp.size(); msgPos++)
+                    {
+                        ss << "0x" << std::uppercase << std::setfill('0') << std::setw(2) << std::hex << static_cast<unsigned int>(rsp[msgPos]) << " ";
+                    }
+                    std::string rawMsgToLog = "Raw Msg Data: " + ss.str();
+                    log<level::INFO>(rawMsgToLog.c_str());
+                }
             }
             boost::system::error_code ecWr;
             size_t wlen =
@@ -238,7 +263,9 @@ int main(int argc, char* argv[])
     app.add_option("-d,--device", device,
                    "use <DEVICE> file. Default is /dev/ipmi-ssif-host");
     bool verbose = false;
+    bool raw = false;
     app.add_option("-v,--verbose", verbose, "print more verbose output");
+    app.add_option("-r,--logRaw", raw, "Log Raw Messages (verbose must be set as well)");
     CLI11_PARSE(app, argc, argv);
 
     // Connect to system bus
@@ -248,7 +275,7 @@ int main(int argc, char* argv[])
     auto bus = std::make_shared<sdbusplus::asio::connection>(*io, dbus);
     bus->request_name(ssifBus);
     // Create the SSIF channel, listening on D-Bus and on the SSIF device
-    SsifChannel ssifchannel(io, bus, device, verbose);
+    SsifChannel ssifchannel(io, bus, device, verbose, raw);
     if (!ssifchannel.initOK())
     {
         return EXIT_FAILURE;
