@@ -30,11 +30,12 @@
 #include <iostream>
 
 /* Max length of ipmi ssif message included netfn and cmd field */
-#define IPMI_SSIF_PAYLOAD_MAX         254
+#define IPMI_SSIF_PAYLOAD_MAX 254
 
 using namespace phosphor::logging;
 
-struct ipmi_ssif_msg_header {
+struct ipmi_ssif_msg_header
+{
     unsigned int len;
     uint8_t msg_num;
 } __attribute((packed));
@@ -56,8 +57,8 @@ class SsifChannel
     static constexpr uint8_t lunMask = (1 << netFnShift) - 1;
 
     SsifChannel(std::shared_ptr<boost::asio::io_context>& io,
-                   std::shared_ptr<sdbusplus::asio::connection>& bus,
-                   const std::string& channel, bool verbose, bool logRaw);
+                std::shared_ptr<sdbusplus::asio::connection>& bus,
+                const std::string& channel, bool verbose, bool logRaw);
     bool initOK() const
     {
         return !!dev;
@@ -79,9 +80,7 @@ class SsifChannel
 SsifChannel::SsifChannel(std::shared_ptr<boost::asio::io_context>& io,
                          std::shared_ptr<sdbusplus::asio::connection>& bus,
                          const std::string& device, bool verbose, bool logRaw) :
-    io(io),
-    bus(bus), 
-    verbose(verbose), logRaw(logRaw)
+    io(io), bus(bus), verbose(verbose), logRaw(logRaw)
 {
     std::string devName = devBase;
     if (!device.empty())
@@ -94,15 +93,14 @@ SsifChannel::SsifChannel(std::shared_ptr<boost::asio::io_context>& io,
     if (fd < 0)
     {
         std::string msgToLog = "Couldn't open SSIF driver with flags O_RDWR."
-                " FILENAME=" + devName +
-                " ERROR=" + strerror(errno);
+                               " FILENAME=" +
+                               devName + " ERROR=" + strerror(errno);
         log<level::ERR>(msgToLog.c_str());
         return;
     }
     else
     {
-        dev = std::make_unique<boost::asio::posix::stream_descriptor>(*io,
-                                                                      fd);
+        dev = std::make_unique<boost::asio::posix::stream_descriptor>(*io, fd);
     }
 
     async_read();
@@ -128,9 +126,7 @@ void SsifChannel::async_read()
                             boost::asio::buffer(xferBuffer, xferBuffer.size()),
                             boost::asio::transfer_at_least(sizeofLenField),
                             [this](const boost::system::error_code& ec,
-                                   size_t rlen) {
-        processMessage(ec, rlen);
-    });
+                                   size_t rlen) { processMessage(ec, rlen); });
 }
 
 void SsifChannel::processMessage(const boost::system::error_code& ecRd,
@@ -151,27 +147,31 @@ void SsifChannel::processMessage(const boost::system::error_code& ecRd,
         uint8_t netfn = rawIter[sizeofLenField] >> netFnShift;
         uint8_t lun = rawIter[sizeofLenField] & lunMask;
         uint8_t cmd = rawIter[sizeofLenField + 1];
-        struct ipmi_ssif_msg_header *header = (struct ipmi_ssif_msg_header*) &rawIter[0];
+        struct ipmi_ssif_msg_header* header =
+            (struct ipmi_ssif_msg_header*)&rawIter[0];
         auto rawEnd = rawIter + sizeofLenField + header->len;
 
         if (verbose)
         {
             unsigned int lenRecv;
-            unsigned int *p = (unsigned int *) rawIter;
+            unsigned int* p = (unsigned int*)rawIter;
             lenRecv = p[0];
-            std::string msgToLog = "Read ssif request message with"
-                    " len=" + std::to_string(lenRecv) +
-                    " netfn=" + std::to_string(netfn) +
-                    " lun=" + std::to_string(lun) +
-                    " cmd=" + std::to_string(cmd);
+            std::string msgToLog =
+                "Read ssif request message with"
+                " len=" +
+                std::to_string(lenRecv) + " netfn=" + std::to_string(netfn) +
+                " lun=" + std::to_string(lun) + " cmd=" + std::to_string(cmd);
             log<level::INFO>(msgToLog.c_str());
 
             if (logRaw)
             {
                 std::stringstream ss;
-                for (unsigned int msgPos = sizeofLenField; msgPos < (lenRecv + sizeofLenField); msgPos++)
+                for (unsigned int msgPos = sizeofLenField;
+                     msgPos < (lenRecv + sizeofLenField); msgPos++)
                 {
-                    ss << "0x" << std::uppercase << std::setfill('0') << std::setw(2) << std::hex << static_cast<unsigned int>(rawIter[msgPos]) << " ";
+                    ss << "0x" << std::uppercase << std::setfill('0')
+                       << std::setw(2) << std::hex
+                       << static_cast<unsigned int>(rawIter[msgPos]) << " ";
                 }
                 std::string rawMsgToLog = "Raw Msg Data: " + ss.str();
                 log<level::INFO>(rawMsgToLog.c_str());
@@ -194,90 +194,95 @@ void SsifChannel::processMessage(const boost::system::error_code& ecRd,
         static constexpr const char ipmiQueueMethod[] = "execute";
         static constexpr int dbusTimeout = 40000000;
         bus->async_method_call_timed(
-            [this, netfnCap{netfn}, lunCap{lun},
-             cmdCap{cmd}, msg_num{header->msg_num}](const boost::system::error_code& ec,
-                          const IpmiDbusRspType& response) {
-                std::vector<uint8_t> rsp;
-                const auto& [netfn, lun, cmd, cc, payload] = response;
-                if (ec)
+            [this, netfnCap{netfn}, lunCap{lun}, cmdCap{cmd},
+             msg_num{header->msg_num}](const boost::system::error_code& ec,
+                                       const IpmiDbusRspType& response) {
+            std::vector<uint8_t> rsp;
+            const auto& [netfn, lun, cmd, cc, payload] = response;
+            if (ec)
+            {
+                std::string msgToLog =
+                    "ssif<->ipmid bus error:"
+                    " netfn=" +
+                    std::to_string(netfn) + " lun=" + std::to_string(lun) +
+                    " cmd=" + std::to_string(cmd) + " error=" + ec.message();
+                log<level::ERR>(msgToLog.c_str());
+                rsp.resize(sizeofLenField + sizeof(netfn) + sizeof(cmd) +
+                           sizeof(cc));
+                /* if dbusTimeout, just return and do not send any response
+                 * to let host continue with other commands, response here
+                 * is potentionally make the response duplicated
+                 * */
+                return;
+            }
+            else
+            {
+                rsp.resize(sizeofLenField + sizeof(netfn) + sizeof(cmd) +
+                           sizeof(cc) + payload.size());
+                // write the response
+                auto rspIter = rsp.begin();
+                struct ipmi_ssif_msg_header* header =
+                    (struct ipmi_ssif_msg_header*)&rspIter[0];
+                header->len = payload.size() + 3;
+                header->msg_num = msg_num;
+                rspIter[sizeofLenField] = (netfn << netFnShift) |
+                                          (lun & lunMask);
+                rspIter[sizeofLenField + 1] = cmd;
+                rspIter[sizeofLenField + 2] = cc;
+                if (payload.size())
                 {
-                    std::string msgToLog = "ssif<->ipmid bus error:"
-                            " netfn=" + std::to_string(netfn) +
-                            " lun=" + std::to_string(lun) +
-                            " cmd=" + std::to_string(cmd) +
-                            " error=" + ec.message();
-                    log<level::ERR>(msgToLog.c_str());
-                    rsp.resize(sizeofLenField + sizeof(netfn) + sizeof(cmd) +
-                               sizeof(cc));
-                    /* if dbusTimeout, just return and do not send any response
-                     * to let host continue with other commands, response here
-                     * is potentionally make the response duplicated
-                     * */
-                    return;
+                    std::copy(payload.cbegin(), payload.cend(),
+                              rspIter + sizeofLenField + 3);
                 }
-                else
-                {
-                    rsp.resize(sizeofLenField + sizeof(netfn) + sizeof(cmd) +
-                               sizeof(cc) + payload.size());
-                        // write the response
-                    auto rspIter = rsp.begin();
-                    struct ipmi_ssif_msg_header *header = (struct ipmi_ssif_msg_header*) &rspIter[0];
-                    header->len = payload.size() + 3;
-                    header->msg_num = msg_num;
-                    rspIter[sizeofLenField] = (netfn << netFnShift) | (lun & lunMask);
-                    rspIter[sizeofLenField + 1] = cmd;
-                    rspIter[sizeofLenField + 2] = cc;
-                    if (payload.size())
-                    {
-                        std::copy(payload.cbegin(), payload.cend(),
-                                rspIter + sizeofLenField + 3);
-                    }
-                }
-                if (verbose)
-                {
-                    std::string msgToLog = "Send ssif respond message with"
-                            " len=" + std::to_string(payload.size() + 3) +
-                            " netfn=" + std::to_string(netfn) +
-                            " lun=" + std::to_string(lun) +
-                            " cmd=" + std::to_string(cmd) +
-                            " cc=" + std::to_string(cc);
-                    log<level::INFO>(msgToLog.c_str());
+            }
+            if (verbose)
+            {
+                std::string msgToLog = "Send ssif respond message with"
+                                       " len=" +
+                                       std::to_string(payload.size() + 3) +
+                                       " netfn=" + std::to_string(netfn) +
+                                       " lun=" + std::to_string(lun) +
+                                       " cmd=" + std::to_string(cmd) +
+                                       " cc=" + std::to_string(cc);
+                log<level::INFO>(msgToLog.c_str());
 
-                    if (logRaw)
-                    {
-                        std::stringstream ss;
-                        for (unsigned int msgPos = 0; msgPos < rsp.size(); msgPos++)
-                        {
-                            ss << "0x" << std::uppercase << std::setfill('0') << std::setw(2) << std::hex << static_cast<unsigned int>(rsp[msgPos]) << " ";
-                        }
-                        std::string rawMsgToLog = "Raw Msg Data: " + ss.str();
-                        log<level::INFO>(rawMsgToLog.c_str());
-                    }
-                }
-                boost::system::error_code ecWr;
-                size_t wlen =
-                    boost::asio::write(*dev, boost::asio::buffer(rsp), ecWr);
-                if (ecWr || wlen != rsp.size())
+                if (logRaw)
                 {
-                    std::string msgToLog = "Failed to send ssif respond message:"
-                            " size=" + std::to_string(wlen) +
-                            " expect=" + std::to_string(rsp.size()) +
-                            " error=" + ecWr.message() +
-                            " netfn=" + std::to_string(netfn) +
-                            " lun=" + std::to_string(lun) +
-                            " cmd=" + std::to_string(cmd) +
-                            " cc=" + std::to_string(cc);
-                    log<level::ERR>(msgToLog.c_str());
+                    std::stringstream ss;
+                    for (unsigned int msgPos = 0; msgPos < rsp.size(); msgPos++)
+                    {
+                        ss << "0x" << std::uppercase << std::setfill('0')
+                           << std::setw(2) << std::hex
+                           << static_cast<unsigned int>(rsp[msgPos]) << " ";
+                    }
+                    std::string rawMsgToLog = "Raw Msg Data: " + ss.str();
+                    log<level::INFO>(rawMsgToLog.c_str());
                 }
-            },
-            ipmiQueueService, ipmiQueuePath, ipmiQueueIntf, ipmiQueueMethod, dbusTimeout,
-            netfn, lun, cmd, data, options);
+            }
+            boost::system::error_code ecWr;
+            size_t wlen = boost::asio::write(*dev, boost::asio::buffer(rsp),
+                                             ecWr);
+            if (ecWr || wlen != rsp.size())
+            {
+                std::string msgToLog = "Failed to send ssif respond message:"
+                                       " size=" +
+                                       std::to_string(wlen) +
+                                       " expect=" + std::to_string(rsp.size()) +
+                                       " error=" + ecWr.message() +
+                                       " netfn=" + std::to_string(netfn) +
+                                       " lun=" + std::to_string(lun) +
+                                       " cmd=" + std::to_string(cmd) +
+                                       " cc=" + std::to_string(cc);
+                log<level::ERR>(msgToLog.c_str());
+            }
+        },
+            ipmiQueueService, ipmiQueuePath, ipmiQueueIntf, ipmiQueueMethod,
+            dbusTimeout, netfn, lun, cmd, data, options);
         processed = rawEnd - rawIterStart;
     }
 
     async_read();
 }
-
 
 int main(int argc, char* argv[])
 {
@@ -288,7 +293,8 @@ int main(int argc, char* argv[])
     bool verbose = false;
     bool raw = false;
     app.add_option("-v,--verbose", verbose, "print more verbose output");
-    app.add_option("-r,--logRaw", raw, "Log Raw Messages (verbose must be set as well)");
+    app.add_option("-r,--logRaw", raw,
+                   "Log Raw Messages (verbose must be set as well)");
     CLI11_PARSE(app, argc, argv);
 
     // Connect to system bus
