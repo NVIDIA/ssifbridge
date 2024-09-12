@@ -215,7 +215,8 @@ void rspTimerHandler(const boost::system::error_code& ec)
 }
 
 void SsifChannel::afterMethodCall(const boost::system::error_code& ec,
-                                  const IpmiDbusRspType& response, uint8_t msgNum)
+                                  const IpmiDbusRspType& response,
+                                  uint8_t msgNum)
 {
     std::vector<uint8_t> rsp;
     const auto& [netfn, lun, cmd, cc, payload] = response;
@@ -270,7 +271,8 @@ void SsifChannel::afterMethodCall(const boost::system::error_code& ec,
     // write the response
     auto rspIter = rsp.begin();
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-    struct IpmiSsifMsgHeader* header = reinterpret_cast<struct IpmiSsifMsgHeader*>(&rspIter[0]);
+    struct IpmiSsifMsgHeader* header =
+        reinterpret_cast<struct IpmiSsifMsgHeader*>(&rspIter[0]);
     header->len = payload.size() + 3;
     header->msgNum = msgNum;
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
@@ -300,8 +302,8 @@ void SsifChannel::afterMethodCall(const boost::system::error_code& ec,
             for (uint8_t msg : rsp)
             {
                 ss << "0x" << std::uppercase << std::setfill('0')
-                    << std::setw(2) << std::hex
-                    << static_cast<unsigned int>(msg) << " ";
+                   << std::setw(2) << std::hex << static_cast<unsigned int>(msg)
+                   << " ";
             }
             std::string rawMsgToLog = "Raw Msg Data: " + ss.str();
             log<level::INFO>(rawMsgToLog.c_str());
@@ -339,7 +341,8 @@ void SsifChannel::processMessage(const boost::system::error_code& ecRd,
     uint8_t lun = rawIter[sizeofLenField] & lunMask;
     uint8_t cmd = rawIter[sizeofLenField + 1];
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-    const struct IpmiSsifMsgHeader* header = reinterpret_cast<const struct IpmiSsifMsgHeader*>(&rawIter[0]);
+    const struct IpmiSsifMsgHeader* header =
+        reinterpret_cast<const struct IpmiSsifMsgHeader*>(&rawIter[0]);
 
     /* keep track of previous request */
     prevReqCmd.netfn = netfn;
@@ -370,11 +373,11 @@ void SsifChannel::processMessage(const boost::system::error_code& ecRd,
         {
             std::stringstream ss;
             for (unsigned int msgPos = sizeofLenField;
-                msgPos < (lenRecv + sizeofLenField); msgPos++)
+                 msgPos < (lenRecv + sizeofLenField); msgPos++)
             {
                 ss << "0x" << std::uppercase << std::setfill('0')
-                    << std::setw(2) << std::hex
-                    << static_cast<unsigned int>(rawIter[msgPos]) << " ";
+                   << std::setw(2) << std::hex
+                   << static_cast<unsigned int>(rawIter[msgPos]) << " ";
             }
             std::string rawMsgToLog = "Raw Msg Data: " + ss.str();
             log<level::INFO>(rawMsgToLog.c_str());
@@ -396,7 +399,7 @@ void SsifChannel::processMessage(const boost::system::error_code& ecRd,
     static constexpr unsigned int dbusTimeout = 60000000;
     bus->async_method_call_timed(
         [this, msgNum{header->msgNum}](const boost::system::error_code& ec,
-               const IpmiDbusRspType& response) {
+                                       const IpmiDbusRspType& response) {
         afterMethodCall(ec, response, msgNum);
     },
         ipmiQueueService, ipmiQueuePath, ipmiQueueIntf, ipmiQueueMethod,
