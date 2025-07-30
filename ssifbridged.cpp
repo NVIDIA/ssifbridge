@@ -65,8 +65,8 @@ class SsifChannel
 {
   public:
     static constexpr size_t ssifMessageSize =
-        ipmiSsifPayloadMax + sizeof(unsigned int);
-    size_t sizeofLenField = sizeof(unsigned int);
+        ipmiSsifPayloadMax + sizeof(IpmiSsifMsgHeader);
+    size_t sizeofLenField = sizeof(IpmiSsifMsgHeader);
     static constexpr uint8_t netFnShift = 2;
     static constexpr uint8_t lunMask = (1 << netFnShift) - 1;
 
