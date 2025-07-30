@@ -111,8 +111,7 @@ std::unique_ptr<SsifChannel> ssifchannel = nullptr;
 SsifChannel::SsifChannel(std::shared_ptr<boost::asio::io_context>& io,
                          std::shared_ptr<sdbusplus::asio::connection>& bus,
                          const std::string& device, bool verbose, bool logRaw) :
-    dev(*io),
-    io(io), bus(bus), verbose(verbose), logRaw(logRaw), rspTimer(*io)
+    dev(*io), io(io), bus(bus), verbose(verbose), logRaw(logRaw), rspTimer(*io)
 {
     std::string devName(devBase);
     if (!device.empty())
@@ -402,8 +401,8 @@ void SsifChannel::processMessage(const boost::system::error_code& ecRd,
     bus->async_method_call_timed(
         [this, msgNum{header->msgNum}](const boost::system::error_code& ec,
                                        const IpmiDbusRspType& response) {
-        afterMethodCall(ec, response, msgNum);
-    },
+            afterMethodCall(ec, response, msgNum);
+        },
         ipmiQueueService, ipmiQueuePath, ipmiQueueIntf, ipmiQueueMethod,
         dbusTimeout, netfn, lun, cmd, data, options);
 }
