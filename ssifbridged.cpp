@@ -425,8 +425,8 @@ int main(int argc, char* argv[])
     auto bus = std::make_shared<sdbusplus::asio::connection>(*io);
     bus->request_name("xyz.openbmc_project.Ipmi.Channel.ipmi_ssif");
     // Create the SSIF channel, listening on D-Bus and on the SSIF device
-    SsifChannel ssifchannel(io, bus, device, verbose, raw);
-    if (!ssifchannel.initOK())
+    ssifchannel = std::make_unique<SsifChannel>(io, bus, device, verbose, raw);
+    if (!ssifchannel->initOK())
     {
         return EXIT_FAILURE;
     }
