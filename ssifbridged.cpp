@@ -54,6 +54,7 @@ struct IpmiSsifMsgHeader
 } __attribute((packed));
 
 static constexpr std::string_view devBase = "/dev/ipmi-ssif-host";
+static constexpr std::string_view nameBase = "ipmi_ssif";
 /* SSIF use IPMI SSIF channel */
 
 /* The timer of driver is set to 15 seconds, need to send
@@ -72,7 +73,8 @@ class SsifChannel
 
     SsifChannel(std::shared_ptr<boost::asio::io_context>& io,
                 std::shared_ptr<sdbusplus::asio::connection>& bus,
-                const std::string& device, bool verbose, bool logRaw);
+                const std::string& device, const std::string& name,
+                bool verbose, bool logRaw);
     bool initOK() const
     {
         return dev.is_open();
@@ -110,7 +112,8 @@ std::unique_ptr<SsifChannel> ssifchannel = nullptr;
 
 SsifChannel::SsifChannel(std::shared_ptr<boost::asio::io_context>& io,
                          std::shared_ptr<sdbusplus::asio::connection>& bus,
-                         const std::string& device, bool verbose, bool logRaw) :
+                         const std::string& device, const std::string& name,
+                         bool verbose, bool logRaw) :
     dev(*io), io(io), bus(bus), verbose(verbose), logRaw(logRaw), rspTimer(*io)
 {
     std::string devName(devBase);
@@ -136,9 +139,10 @@ SsifChannel::SsifChannel(std::shared_ptr<boost::asio::io_context>& io,
     asyncRead();
     // register interfaces...
     server = std::make_shared<sdbusplus::asio::object_server>(bus);
+    std::string objPath = "/xyz/openbmc_project/Ipmi/Channel/" + name;
+    std::string ifaceName = "xyz.openbmc_project.Ipmi.Channel." + name;
     std::shared_ptr<sdbusplus::asio::dbus_interface> iface =
-        server->add_interface("/xyz/openbmc_project/Ipmi/Channel/ipmi_ssif",
-                              "xyz.openbmc_project.Ipmi.Channel.ipmi_ssif");
+        server->add_interface(objPath, ifaceName);
     iface->initialize();
 }
 
@@ -411,8 +415,12 @@ int main(int argc, char* argv[])
 {
     CLI::App app("SSIF IPMI bridge");
     std::string device;
+    std::string name(nameBase);
     app.add_option("-d,--device", device,
                    "use <DEVICE> file. Default is /dev/ipmi-ssif-host");
+    app.add_option("-n,--name", name,
+                   "Channel name used in D-Bus service name and object path. "
+                   "Default is ipmi_ssif");
     bool verbose = false;
     bool raw = false;
     app.add_option("-v,--verbose", verbose, "print more verbose output");
@@ -423,9 +431,11 @@ int main(int argc, char* argv[])
     auto io = std::make_shared<boost::asio::io_context>();
 
     auto bus = std::make_shared<sdbusplus::asio::connection>(*io);
-    bus->request_name("xyz.openbmc_project.Ipmi.Channel.ipmi_ssif");
+    std::string dbusName = "xyz.openbmc_project.Ipmi.Channel." + name;
+    bus->request_name(dbusName.c_str());
     // Create the SSIF channel, listening on D-Bus and on the SSIF device
-    ssifchannel = std::make_unique<SsifChannel>(io, bus, device, verbose, raw);
+    ssifchannel =
+        std::make_unique<SsifChannel>(io, bus, device, name, verbose, raw);
     if (!ssifchannel->initOK())
     {
         return EXIT_FAILURE;
