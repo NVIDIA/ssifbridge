@@ -412,6 +412,7 @@ void SsifChannel::processMessage(const boost::system::error_code& ecRd,
 }
 
 int main(int argc, char* argv[])
+try
 {
     CLI::App app("SSIF IPMI bridge");
     std::string device;
@@ -444,4 +445,16 @@ int main(int argc, char* argv[])
     io->run();
 
     return 0;
+}
+catch (const std::exception& e)
+{
+    std::string msg =
+        std::string("ssifbridge: unhandled exception in main: ") + e.what();
+    log<level::ERR>(msg.c_str());
+    return EXIT_FAILURE;
+}
+catch (...)
+{
+    log<level::ERR>("ssifbridge: unknown unhandled exception in main");
+    return EXIT_FAILURE;
 }
