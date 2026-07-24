@@ -17,11 +17,9 @@
  * the D-Bus IPMI Interface.
  */
 
-#include <getopt.h>
 #include <linux/ipmi_bmc.h>
 
 #include <CLI/CLI.hpp>
-#include <boost/algorithm/string/replace.hpp>
 #include <boost/asio/completion_condition.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/read.hpp>
@@ -30,12 +28,30 @@
 #include <phosphor-logging/log.hpp>
 #include <sdbusplus/asio/connection.hpp>
 #include <sdbusplus/asio/object_server.hpp>
-#include <sdbusplus/timer.hpp>
 
-#include <iostream>
+#include <cstring>
 
 /* Max length of ipmi ssif message included netfn and cmd field */
 constexpr const size_t ipmiSsifPayloadMax = 254;
+
+/* IPMI App NetFn 0x06, Cmd 0x57 - Get System Interface Capabilities. */
+constexpr uint8_t ipmiNetFnApp = 0x06;
+constexpr uint8_t ipmiCmdGetSysIfCap = 0x57;
+constexpr uint8_t ipmiSsifIfType = 0x00;
+constexpr uint8_t ipmiSsifCapFlags = 0x80;
+constexpr uint8_t ipmiSsifMaxXmitMsgSize = 0xFF;
+constexpr uint8_t ipmiSsifMaxRecvMsgSize = 0xFF;
+/* netfn/lun byte + cmd byte */
+constexpr size_t ipmiHdrSize = 2;
+/* completion code byte */
+constexpr size_t ipmiCcSize = 1;
+/* reserved byte in Get System Interface Capabilities response */
+constexpr uint8_t ipmiSsifRsvd = 0x00;
+/* payloadLen: ifType + capFlags + maxXmit + maxRecv + reserved */
+constexpr size_t ipmiSsifCapPayloadLen = 5;
+/* total IPMI length field: hdr + cc + payload */
+constexpr uint32_t ipmiSsifCapLenField =
+    ipmiHdrSize + ipmiCcSize + ipmiSsifCapPayloadLen;
 
 using phosphor::logging::level;
 using phosphor::logging::log;
@@ -90,8 +106,15 @@ class SsifChannel
     int showNumOfReqNotRsp() const;
     boost::asio::posix::stream_descriptor dev;
     IpmiCmd prevReqCmd{};
+    /* Set when a timeout response has already been sent for the current
+     * request; cleared on each new incoming request.  Ensures any late
+     * D-Bus response is dropped so the host never receives two responses
+     * for one request. */
+    bool timedOut = false;
 
   protected:
+    bool handleGetSysIfCap(uint8_t netfn, uint8_t cmd,
+                           const std::vector<uint8_t>& data);
     std::array<uint8_t, ssifMessageSize> xferBuffer{};
     std::shared_ptr<boost::asio::io_context> io;
     std::shared_ptr<sdbusplus::asio::connection> bus;
@@ -165,6 +188,42 @@ void SsifChannel::asyncRead()
         });
 }
 
+bool SsifChannel::handleGetSysIfCap(uint8_t netfn, uint8_t cmd,
+                                    const std::vector<uint8_t>& data)
+{
+    if (netfn != ipmiNetFnApp || cmd != ipmiCmdGetSysIfCap)
+    {
+        return false;
+    }
+    if (data.empty() || data[0] != ipmiSsifIfType)
+    {
+        return false;
+    }
+
+    std::vector<uint8_t> rsp(sizeof(ipmiSsifCapLenField) + ipmiHdrSize +
+                             ipmiCcSize + ipmiSsifCapPayloadLen);
+    std::memcpy(rsp.data(), &ipmiSsifCapLenField, sizeof(ipmiSsifCapLenField));
+    size_t idx = sizeof(ipmiSsifCapLenField);
+    rsp[idx++] = static_cast<uint8_t>(
+        ((ipmiNetFnApp + 1) << netFnShift) | (prevReqCmd.lun & lunMask));
+    rsp[idx++] = ipmiCmdGetSysIfCap;
+    rsp[idx++] = ipmiSsifRsvd;
+    rsp[idx++] = ipmiSsifRsvd;
+    rsp[idx++] = ipmiSsifCapFlags;
+    rsp[idx++] = ipmiSsifMaxXmitMsgSize;
+    rsp[idx++] = ipmiSsifMaxRecvMsgSize;
+
+    numberOfReqNotRsp--;
+    rspTimer.cancel();
+    boost::system::error_code ecWr;
+    size_t wlen = boost::asio::write(dev, boost::asio::buffer(rsp), ecWr);
+    if (ecWr || wlen != rsp.size())
+    {
+        log<level::ERR>("handleGetSysIfCap: failed to send response");
+    }
+    return true;
+}
+
 int SsifChannel::showNumOfReqNotRsp() const
 {
     return numberOfReqNotRsp;
@@ -199,6 +258,8 @@ void rspTimerHandler(const boost::system::error_code& ec)
         (prevReqCmd.lun & SsifChannel::lunMask);
     rsp[ssifchannel->sizeofLenField + 1] = prevReqCmd.cmd;
     rsp[ssifchannel->sizeofLenField + 2] = ccResponseNotAvailable;
+
+    ssifchannel->timedOut = true;
 
     boost::system::error_code ecWr;
 
@@ -242,7 +303,8 @@ void SsifChannel::afterMethodCall(const boost::system::error_code& ec,
         return;
     }
 
-    if ((prevReqCmd.netfn != (netfn - 1) || prevReqCmd.lun != lun ||
+    if (timedOut ||
+        (prevReqCmd.netfn != (netfn - 1) || prevReqCmd.lun != lun ||
          prevReqCmd.cmd != cmd) ||
         ((prevReqCmd.netfn == (netfn - 1) && prevReqCmd.lun == lun &&
           prevReqCmd.cmd == cmd) &&
@@ -356,6 +418,7 @@ void SsifChannel::processMessage(const boost::system::error_code& ecRd,
 
     /* there is a request coming */
     numberOfReqNotRsp++;
+    timedOut = false;
     /* start response timer */
     rspTimer.expires_after(std::chrono::microseconds(hostReqTimeout));
     rspTimer.async_wait(rspTimerHandler);
@@ -392,6 +455,10 @@ void SsifChannel::processMessage(const boost::system::error_code& ecRd,
     std::vector<uint8_t> data(rawIter + sizeofLenField + 2, rawEnd);
     // non-session bridges still need to pass an empty options map
     std::map<std::string, std::variant<int>> options;
+    if (handleGetSysIfCap(netfn, cmd, data))
+    {
+        return;
+    }
     static constexpr const char* ipmiQueueService =
         "xyz.openbmc_project.Ipmi.Host";
     static constexpr const char* ipmiQueuePath = "/xyz/openbmc_project/Ipmi";
