@@ -103,6 +103,8 @@ class SsifChannel
     void afterMethodCall(const boost::system::error_code& ec,
                          const IpmiDbusRspType& response, uint8_t msgNum);
     void processMessage(const boost::system::error_code& ecRd, size_t rlen);
+    // reqCmd captured by value at arm time to frame the keep-alive
+    void rspTimerHandler(const boost::system::error_code& ec, IpmiCmd reqCmd);
     int showNumOfReqNotRsp() const;
     boost::asio::posix::stream_descriptor dev;
     IpmiCmd prevReqCmd{};
@@ -126,6 +128,9 @@ class SsifChannel
      * not processed properly
      * */
     int numberOfReqNotRsp = 0;
+    // consecutive read failures; bail out only after a persistent run
+    size_t consecutiveReadErrors = 0;
+    static constexpr size_t maxConsecutiveReadErrors = 10;
 
     boost::asio::steady_timer rspTimer;
 };
@@ -229,7 +234,8 @@ int SsifChannel::showNumOfReqNotRsp() const
     return numberOfReqNotRsp;
 }
 
-void rspTimerHandler(const boost::system::error_code& ec)
+void SsifChannel::rspTimerHandler(const boost::system::error_code& ec,
+                                  IpmiCmd reqCmd)
 {
     if (ec == boost::asio::error::operation_aborted)
     {
@@ -237,34 +243,29 @@ void rspTimerHandler(const boost::system::error_code& ec)
     }
     std::vector<uint8_t> rsp;
     constexpr uint8_t ccResponseNotAvailable = 0xce;
-    IpmiCmd& prevReqCmd = ssifchannel->prevReqCmd;
-    rsp.resize(ssifchannel->sizeofLenField + sizeof(prevReqCmd.cmd) +
-               sizeof(prevReqCmd.netfn) + sizeof(ccResponseNotAvailable));
+    rsp.resize(sizeofLenField + sizeof(reqCmd.cmd) + sizeof(reqCmd.netfn) +
+               sizeof(ccResponseNotAvailable));
     std::string msgToLog =
         "timeout, send response to keep host alive"
         " netfn=" +
-        std::to_string(prevReqCmd.netfn) +
-        " lun=" + std::to_string(prevReqCmd.lun) +
-        " cmd=" + std::to_string(prevReqCmd.cmd) +
+        std::to_string(reqCmd.netfn) + " lun=" + std::to_string(reqCmd.lun) +
+        " cmd=" + std::to_string(reqCmd.cmd) +
         " cc=" + std::to_string(ccResponseNotAvailable) +
-        " numberOfReqNotRsp=" +
-        std::to_string(ssifchannel->showNumOfReqNotRsp());
+        " numberOfReqNotRsp=" + std::to_string(showNumOfReqNotRsp());
     log<level::INFO>(msgToLog.c_str());
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
     unsigned int* t = reinterpret_cast<unsigned int*>(rsp.data());
     *t = 3;
-    rsp[ssifchannel->sizeofLenField] =
-        ((prevReqCmd.netfn + 1) << SsifChannel::netFnShift) |
-        (prevReqCmd.lun & SsifChannel::lunMask);
-    rsp[ssifchannel->sizeofLenField + 1] = prevReqCmd.cmd;
-    rsp[ssifchannel->sizeofLenField + 2] = ccResponseNotAvailable;
+    rsp[sizeofLenField] = ((reqCmd.netfn + 1) << SsifChannel::netFnShift) |
+                          (reqCmd.lun & SsifChannel::lunMask);
+    rsp[sizeofLenField + 1] = reqCmd.cmd;
+    rsp[sizeofLenField + 2] = ccResponseNotAvailable;
 
     ssifchannel->timedOut = true;
 
     boost::system::error_code ecWr;
 
-    size_t wlen =
-        boost::asio::write(ssifchannel->dev, boost::asio::buffer(rsp), ecWr);
+    size_t wlen = boost::asio::write(dev, boost::asio::buffer(rsp), ecWr);
     if (ecWr || wlen != rsp.size())
     {
         msgToLog =
@@ -272,9 +273,9 @@ void rspTimerHandler(const boost::system::error_code& ec)
             " size=" +
             std::to_string(wlen) + " expect=" + std::to_string(rsp.size()) +
             " error=" + ecWr.message() +
-            " netfn=" + std::to_string(prevReqCmd.netfn + 1) +
-            " lun=" + std::to_string(prevReqCmd.lun) +
-            " cmd=" + std::to_string(rsp[ssifchannel->sizeofLenField + 1]) +
+            " netfn=" + std::to_string(reqCmd.netfn + 1) +
+            " lun=" + std::to_string(reqCmd.lun) +
+            " cmd=" + std::to_string(rsp[sizeofLenField + 1]) +
             " cc=" + std::to_string(ccResponseNotAvailable);
         log<level::ERR>(msgToLog.c_str());
     }
@@ -397,10 +398,36 @@ void SsifChannel::processMessage(const boost::system::error_code& ecRd,
 {
     if (ecRd || rlen < 2)
     {
-        channelAbort("Failed to read req msg", ecRd);
+        // descriptor torn down (normal shutdown); nothing to recover
+        if (ecRd == boost::asio::error::operation_aborted)
+        {
+            return;
+        }
+        // transient read error: re-arm instead of killing the daemon
+        if (++consecutiveReadErrors > maxConsecutiveReadErrors)
+        {
+            channelAbort("Too many consecutive SSIF read errors", ecRd);
+            return;
+        }
+        std::string msgToLog =
+            "Failed to read req msg, re-arming. ERROR=" + ecRd.message() +
+            " rlen=" + std::to_string(rlen) +
+            " consecutiveReadErrors=" + std::to_string(consecutiveReadErrors);
+        log<level::ERR>(msgToLog.c_str());
+        asyncRead();
         return;
     }
+    consecutiveReadErrors = 0;
     asyncRead();
+
+    // need header + netfn/lun + cmd; drop short frames (avoids first>last)
+    if (rlen < sizeofLenField + 2)
+    {
+        std::string msgToLog =
+            "Drop too-short ssif request message, len=" + std::to_string(rlen);
+        log<level::ERR>(msgToLog.c_str());
+        return;
+    }
 
     const auto* rawIter = xferBuffer.cbegin();
     const auto* rawEnd = rawIter + rlen;
@@ -419,9 +446,12 @@ void SsifChannel::processMessage(const boost::system::error_code& ecRd,
     /* there is a request coming */
     numberOfReqNotRsp++;
     timedOut = false;
-    /* start response timer */
+    // start response timer; capture this request's cmd for the keep-alive
     rspTimer.expires_after(std::chrono::microseconds(hostReqTimeout));
-    rspTimer.async_wait(rspTimerHandler);
+    rspTimer.async_wait(
+        [this, reqCmd{prevReqCmd}](const boost::system::error_code& ec) {
+            rspTimerHandler(ec, reqCmd);
+        });
 
     if (verbose)
     {
@@ -441,7 +471,7 @@ void SsifChannel::processMessage(const boost::system::error_code& ecRd,
         {
             std::stringstream ss;
             for (unsigned int msgPos = sizeofLenField;
-                 msgPos < (lenRecv + sizeofLenField); msgPos++)
+                 msgPos < (lenRecv + sizeofLenField) && msgPos < rlen; msgPos++)
             {
                 ss << "0x" << std::uppercase << std::setfill('0')
                    << std::setw(2) << std::hex
