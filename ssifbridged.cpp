@@ -90,7 +90,7 @@ class SsifChannel
     SsifChannel(std::shared_ptr<boost::asio::io_context>& io,
                 std::shared_ptr<sdbusplus::asio::connection>& bus,
                 const std::string& device, const std::string& name,
-                bool verbose, bool logRaw);
+                bool verbose, bool logRaw, int hostId);
     bool initOK() const
     {
         return dev.is_open();
@@ -123,6 +123,7 @@ class SsifChannel
     std::shared_ptr<sdbusplus::asio::object_server> server;
     bool verbose;
     bool logRaw;
+    int hostId;
     /* This variable is always 0 when a request is responded properly,
      * any value larger than 0 meaning there is/are request(s) which
      * not processed properly
@@ -141,8 +142,9 @@ std::unique_ptr<SsifChannel> ssifchannel = nullptr;
 SsifChannel::SsifChannel(std::shared_ptr<boost::asio::io_context>& io,
                          std::shared_ptr<sdbusplus::asio::connection>& bus,
                          const std::string& device, const std::string& name,
-                         bool verbose, bool logRaw) :
-    dev(*io), io(io), bus(bus), verbose(verbose), logRaw(logRaw), rspTimer(*io)
+                         bool verbose, bool logRaw, int hostId) :
+    dev(*io), io(io), bus(bus), verbose(verbose), logRaw(logRaw),
+    hostId(hostId), rspTimer(*io)
 {
     std::string devName(devBase);
     if (!device.empty())
@@ -483,8 +485,8 @@ void SsifChannel::processMessage(const boost::system::error_code& ecRd,
     }
     // copy out payload
     std::vector<uint8_t> data(rawIter + sizeofLenField + 2, rawEnd);
-    // non-session bridges still need to pass an empty options map
-    std::map<std::string, std::variant<int>> options;
+    // Identify the physical host which submitted this request.
+    std::map<std::string, std::variant<int>> options{{"hostId", hostId}};
     if (handleGetSysIfCap(netfn, cmd, data))
     {
         return;
@@ -519,6 +521,8 @@ try
     app.add_option("-n,--name", name,
                    "Channel name used in D-Bus service name and object path. "
                    "Default is ipmi_ssif");
+    int hostId = 0;
+    app.add_option("-i,--host-id", hostId, "Host ID forwarded to host-ipmid");
     bool verbose = false;
     bool raw = false;
     app.add_option("-v,--verbose", verbose, "print more verbose output");
@@ -526,14 +530,20 @@ try
                    "Log Raw Messages (verbose must be set as well)");
     CLI11_PARSE(app, argc, argv);
 
+    if (hostId < 0)
+    {
+        log<level::ERR>("Invalid --host-id. Value must be >= 0.");
+        return EXIT_FAILURE;
+    }
+
     auto io = std::make_shared<boost::asio::io_context>();
 
     auto bus = std::make_shared<sdbusplus::asio::connection>(*io);
     std::string dbusName = "xyz.openbmc_project.Ipmi.Channel." + name;
     bus->request_name(dbusName.c_str());
     // Create the SSIF channel, listening on D-Bus and on the SSIF device
-    ssifchannel =
-        std::make_unique<SsifChannel>(io, bus, device, name, verbose, raw);
+    ssifchannel = std::make_unique<SsifChannel>(io, bus, device, name, verbose,
+                                                raw, hostId);
     if (!ssifchannel->initOK())
     {
         return EXIT_FAILURE;
